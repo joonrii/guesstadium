@@ -46,27 +46,39 @@ function setStreetStatus(text, isError){
 
 // --- Mapillary lookup -----------------------------------------------------
 
+async function fetchWithTimeout(url, ms){
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try{
+    const res = await fetch(url, { signal: controller.signal });
+    return res;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function findNearbyImage(lat, lng){
-  const offsets = [0.01, 0.03, 0.08, 0.2]; // ~1km, 3km, 9km, 22km
-  for(const off of offsets){
-    const lngOff = off / Math.cos(lat * Math.PI/180);
-    const minLng = lng - lngOff, maxLng = lng + lngOff;
-    const minLat = lat - off, maxLat = lat + off;
-    const url = `https://graph.mapillary.com/images?access_token=${MAPILLARY_TOKEN}&fields=id&bbox=${minLng},${minLat},${maxLng},${maxLat}&limit=1`;
-    try{
-      const res = await fetch(url);
-      if(res.status === 401 || res.status === 403){
-        throw new Error('AUTH');
-      }
-      if(!res.ok) continue;
-      const data = await res.json();
-      if(data && data.data && data.data.length > 0){
-        return data.data[0].id;
-      }
-    }catch(err){
-      if(err.message === 'AUTH') throw err;
-      // network/other error on this offset, try the next one
-    }
+  // Un único radio generoso (~2.2km) es suficiente en la mayoría de los casos
+  // y evita disparar decenas de peticiones por estadio.
+  const off = 0.02;
+  const lngOff = off / Math.cos(lat * Math.PI/180);
+  const minLng = lng - lngOff, maxLng = lng + lngOff;
+  const minLat = lat - off, maxLat = lat + off;
+  const url = `https://graph.mapillary.com/images?access_token=${MAPILLARY_TOKEN}&fields=id&bbox=${minLng},${minLat},${maxLng},${maxLat}&limit=1`;
+
+  let res;
+  try{
+    res = await fetchWithTimeout(url, 5000);
+  }catch(err){
+    return null; // timeout o error de red: se descarta este estadio, sin bloquear
+  }
+  if(res.status === 401 || res.status === 403){
+    throw new Error('AUTH');
+  }
+  if(!res.ok) return null;
+  const data = await res.json();
+  if(data && data.data && data.data.length > 0){
+    return data.data[0].id;
   }
   return null;
 }
@@ -149,6 +161,7 @@ async function advanceRound(){
   try{
     while(candidateIndex < candidatePool.length && !found){
       const s = candidatePool[candidateIndex++];
+      setStreetStatus(`Probando ${s.name}… (${candidateIndex}/${candidatePool.length})`, false);
       const imageId = await findNearbyImage(s.lat, s.lng);
       if(imageId){ found = { stadium:s, imageId }; }
     }
